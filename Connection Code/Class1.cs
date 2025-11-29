@@ -1,247 +1,252 @@
-﻿using System.Net;
+﻿
+using System;
+using System.Collections.Generic;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 
+
+
+
+
 #nullable enable
-namespace Connection_Code
+public class NetworkCom
 {
-    public class NetworkCom
+    public event Action<object> MessageRecieved;
+    public Dictionary<Type, Action<object>> FuncDict = new Dictionary<Type, Action<object>>();
+    public class Connection
     {
-        public event Action<object> MessageRecieved;
+        public TcpClient TcpConnection;
         public Dictionary<Type, Action<object>> FuncDict = new Dictionary<Type, Action<object>>();
-        public enum ComMode
+        public event Action<object> MessageRecieved;
+        public event Action<object> Disconnected;
+        public async Task SendMessage(object obj)
         {
-            server,
-            client
-        }
-        public class Connection
-        {
-            public TcpClient TcpConnection;
-            public UdpClient UdpConnection;
-        }
-
-        struct DisconnectReason
-        {
-            public string reason;
-        }
-        struct SharePacket
-        {
-            public string type;
-            public byte[] data;
-        }
-
-        public static byte[] MakePacket(object obj)
-        {
-            var temp = new SharePacket
-            {
-                type = obj.GetType().Name,
-                data = JsonSerializer.SerializeToUtf8Bytes(obj)
-            };
-            var data = JsonSerializer.SerializeToUtf8Bytes(temp);
-            return data;
-        }
-        public static object? ReturnPacket(byte[] data)
-        {
-            try
-            {
-                var e = JsonDocument.Parse(Encoding.UTF8.GetString(data));
-                var c = Type.GetType(e.RootElement.GetProperty("type").GetRawText());
-                if (c != null)
-                {
-                    var z = JsonSerializer.Deserialize(e.RootElement.GetProperty("data").GetBytesFromBase64(), c);
-                    if (z != null)
-                    {
-                        return z;
-                    }
-                }
-            }
-            catch
-            {
-
-            }
-            return null;
-        }
-        public async Task MessageLoop(TcpClient client)
-        {
-            byte[] buffer = new byte[1024];
-            int bytesRead;
-            var stream = client.GetStream();
-            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
-            {
-                var temp = ReturnPacket(buffer);
-                Type type = temp.GetType();
-                if (FuncDict.TryGetValue(type, out var method)) method?.Invoke(temp);
-                MessageRecieved?.Invoke(temp);
-
-            }
-        }
-
-        public static async Task<UdpClient> GetUdpClient(string ip)
-        {
-            IPEndPoint endpoint = new IPEndPoint(IPAddress.Parse(ip), 4001);
-            UdpClient client = new UdpClient(endpoint);
-            return client;
+            byte[] data = NetworkCom.MakePacket(obj);
+            await TcpConnection.GetStream().WriteAsync(data, 0, data.Length);
         }
     }
 
-
-
-    public class ComServer : NetworkCom
+    public struct DisconnectReason
     {
-        public TcpListener Listener;
-        public bool AcceptingClients = false;
-        bool IdBased = true;
-        public Dictionary<string, Connection> Connections = new Dictionary<string, Connection>();
-        public int maxConnections = 4;
-        public List<string> IPBanDict = new List<string>();
+        public string reason;
+    }
+    struct SharePacket
+    {
+        public string type;
+        public byte[] data;
+    }
 
-        bool amirunning = true;
-
-        public event Action ClientConnected;
-        public ComServer(int port, int maxConnectionNumber = 4, bool isBasedOnID = true)
+    public static byte[] MakePacket(object obj)
+    {
+        var temp = new SharePacket
         {
-            IdBased = isBasedOnID;
-            maxConnections = maxConnectionNumber;
-            Listener = new TcpListener(IPAddress.Any, port);
-            Listener.Start();
-            Task.Run(RecieveClientLoop);
-
-
-        }
-
-        public void UDPPool()
+            type = obj.GetType().Name,
+            data = JsonSerializer.SerializeToUtf8Bytes(obj)
+        };
+        var data = JsonSerializer.SerializeToUtf8Bytes(temp);
+        return data;
+    }
+    public static async Task<object?> ReturnPacket(byte[] data)
+    {
+        try
         {
-            while (amirunning)
+            var e = JsonDocument.Parse(Encoding.UTF8.GetString(data));
+            var c = Type.GetType(e.RootElement.GetProperty("type").GetRawText());
+            if (c != null)
             {
-
-            }
-        }
-
-
-        public async void RecieveClientLoop()
-        {
-            while (amirunning)
-            {
-                var temp = await Listener.AcceptTcpClientAsync();
-                if (!AcceptingClients)
+                var bytedata = e.RootElement.GetProperty("data").GetBytesFromBase64();
+                var z = await Task.Run(() => { return JsonSerializer.Deserialize(bytedata, c); }).WaitAsync(CancellationToken.None);
+                if (z != null)
                 {
-                    temp.SendTimeout = 1000;
-                    temp.Close();
-                }
-                else
-                if (IPBanDict.Contains((temp.Client.RemoteEndPoint as IPEndPoint).Address.ToString()))
-                {
-                    temp.SendTimeout = 100;
-                    temp.Close();
-                }
-                else
-                {
-                    HandleClientJoin(temp);
+                    return z;
                 }
             }
-            return;
         }
-        public void MessageSend(TcpClient cli, string message)
+        catch
         {
 
-            byte[] data = Encoding.UTF8.GetBytes(message + "\n");
-
-            cli.GetStream().Write(data, 0, data.Length);
+        }
+        return null;
+    }
+    public async Task MessageLoop(Connection client)
+    {
+        byte[] buffer = new byte[1024];
+        int bytesRead;
+        var stream = client.TcpConnection.GetStream();
+        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+        {
+            var temp = ReturnPacket(buffer);
+            Type type = temp.GetType();
+            if (FuncDict.TryGetValue(type, out var method)) method?.Invoke(temp);
+            MessageRecieved?.Invoke(temp);
 
         }
-        public void Broadcast(object obj)
+    }
+
+    public static async Task<UdpClient> GetUdpClient(string ip)
+    {
+        IPEndPoint endpoint = new IPEndPoint(IPAddress.Parse(ip), 4001);
+        UdpClient client = new UdpClient(endpoint);
+        return client;
+    }
+}
+
+
+
+public class ComServer : NetworkCom
+{
+    public TcpListener Listener;
+    bool AcceptingClients = false;
+    public void StartAcceptingClients()
+    {
+        AcceptingClients = true;
+    }
+    public void StopAcceptingClients()
+    {
+        AcceptingClients = false;
+    }
+    bool IdBased = true;
+    public Dictionary<string, Connection> Connections = new Dictionary<string, Connection>();
+    public int maxConnections = 4;
+    public List<string> IPBanDict = new List<string>();
+
+    bool amirunning = true;
+
+    public event Action ClientConnected;
+    public ComServer(int port, int maxConnectionNumber = 4, bool isBasedOnID = true)
+    {
+        IdBased = isBasedOnID;
+        maxConnections = maxConnectionNumber;
+        Listener = new TcpListener(IPAddress.Any, port);
+        Listener.Start();
+        Task.Run(RecieveClientLoop);
+
+
+    }
+    public async Task RecieveClientLoop()
+    {
+        while (amirunning)
         {
-            List<string> disconnects = new List<string>();
-            foreach (var conn in Connections)
+            var temp = await Listener.AcceptTcpClientAsync();
+            var endpoint = temp.Client.RemoteEndPoint as IPEndPoint;
+            if (endpoint == null)
             {
-                Send(obj, conn.Key);
+                temp.Close();
+                continue;
             }
-        }
-
-        void HandleClientLeave(string adress)
-        {
-            if (!Connections.TryGetValue(adress, out var connection)) return;
-            connection.TcpConnection.Close();
-            connection.TcpConnection.Dispose();
-            Connections.Remove(adress);
-        }
-
-
-        async Task HandleClientJoin(TcpClient Client)
-        {
-            ClientConnected?.Invoke();
-            var temp = new Connection { TcpConnection = Client };
-#pragma warning disable CS4014 //fire & forget
-            MessageLoop(Client);
-#pragma warning restore CS4014
-
-            string id = "";
-
-            if (IdBased)
+            var ip = endpoint!.Address.ToString();
+            if (!AcceptingClients)
             {
-                for (int i = 0; i < maxConnections; i++)
+                temp.Close();
+            }
+            else
+            if (IPBanDict.Contains(ip))
+            {
+                byte[] data = NetworkCom.MakePacket(new DisconnectReason { reason = $"IP adress found in IPBanDict!!!" });
+                if (temp.Connected)
                 {
-                    if (!Connections.ContainsKey(i.ToString()))
-                    {
-                        id = i.ToString();
-                        break;
-                    }
+                    temp.GetStream().WriteAsync(data, 0, data.Length);
                 }
+                temp.Close();
+            }
+            if (!IdBased && Connections.ContainsKey(ip))
+            {
+                continue;
             }
             else
             {
-                id = (temp.TcpConnection.Client.RemoteEndPoint as IPEndPoint).Address.ToString();
+                HandleClientJoin(temp);
             }
-            Connections.Add(id, temp);
         }
-
-        public void Send(object obj, string adress)
-        {
-            if (!Connections.TryGetValue(adress, out var connection)) return;
-            if (!connection.TcpConnection.Connected)
-            {
-                HandleClientLeave(adress);
-                return;
-            }
-
-
-
-            byte[] data = NetworkCom.MakePacket(obj);
-
-            connection?.TcpConnection.GetStream().Write(data, 0, data.Length);
-        }
-
+        return;
     }
-    public class ComClient : NetworkCom
+    public void Broadcast(object obj)
     {
-
-        public NetworkCom parent;
-        public TcpClient Client = new TcpClient();
-        public string ip;
-        public NetworkStream stream;
-
-        public async Task AttempJoinServer(string host, int port)
+        List<string> disconnects = new List<string>();
+        foreach (var conn in Connections)
         {
-            Client = new TcpClient();
-            await Client.ConnectAsync(host, port);
+            Send(obj, conn.Key);
+        }
+    }
+
+    void HandleClientLeave(string adress)
+    {
+        if (!Connections.TryGetValue(adress, out var connection)) return;
+        connection.TcpConnection.Close();
+        connection.TcpConnection.Dispose();
+        Connections.Remove(adress);
+    }
+
+
+    async Task HandleClientJoin(TcpClient Client)
+    {
+        ClientConnected?.Invoke();
+        var temp = new Connection { TcpConnection = Client };
 #pragma warning disable CS4014 //fire & forget
-            MessageLoop(Client);
+        MessageLoop(temp);
 #pragma warning restore CS4014
+
+        string id = "";
+
+        if (IdBased)
+        {
+            for (int i = 0; i < maxConnections; i++)
+            {
+                if (!Connections.ContainsKey(i.ToString()))
+                {
+                    id = i.ToString();
+                    break;
+                }
+            }
+        }
+        else
+        {
+            id = (temp.TcpConnection.Client.RemoteEndPoint as IPEndPoint).Address.ToString();
+        }
+        Connections.Add(id, temp);
+    }
+
+    public async Task Send(object obj, string adress)
+    {
+        if (!Connections.TryGetValue(adress, out var connection)) return;
+        if (!connection.TcpConnection.Connected)
+        {
+            HandleClientLeave(adress);
             return;
         }
-        public void MessageSend(NetworkCom Parent, TcpClient cli, string message)
-        {
-            parent = Parent;
-            byte[] data = Encoding.UTF8.GetBytes(message + "\n");
 
-            cli.GetStream().Write(data, 0, data.Length);
-        }
-        public void Send(object obj)
-        {
-            byte[] data = NetworkCom.MakePacket(obj);
 
-            Client.GetStream().Write(data, 0, data.Length);
-        }
+
+        byte[] data = NetworkCom.MakePacket(obj);
+
+        await connection?.TcpConnection.GetStream().WriteAsync(data, 0, data.Length);
+    }
+
+}
+public class ComClient : NetworkCom
+{
+
+    public NetworkCom parent;
+    public TcpClient Client = new TcpClient();
+    public string ip;
+    public NetworkStream stream;
+    public Connection connection;
+    public async Task AttempJoinServer(string host, int port)
+    {
+        Client = new TcpClient();
+        await Client.ConnectAsync(host, port);
+#pragma warning disable CS4014 //fire & forget
+        var temp = new Connection { TcpConnection = Client };
+        MessageLoop(temp);
+#pragma warning restore CS4014
+        return;
+    }
+    public async Task Send(object obj)
+    {
+        byte[] data = NetworkCom.MakePacket(obj);
+
+        await Client.GetStream().WriteAsync(data, 0, data.Length);
     }
 }
